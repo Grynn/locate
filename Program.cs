@@ -16,6 +16,10 @@ namespace locate
         static bool OptModified = false;
         static bool OptSize = false;
         static bool OptUsage = false;
+        static bool OptPath = true;
+        static bool OptQuiet = true;
+        static bool OptGroup = false;
+        static bool OptRecent = false;
 
         static void Main(string[] args)
         {
@@ -35,27 +39,31 @@ namespace locate
             
             try
             {
-                //Return top 20 most recently modified files
+                //No args: Return top 20 most recently modified files
                 if (args.Length == 0)
                 {
-                    query = "SELECT TOP 20 System.ItemPathDisplay ";
-                    query += GetOptionalProperties();
+                    OptRecent = true;
+                    query = GetSelectClause();
                     query += " FROM SystemIndex WHERE SCOPE='file:' ORDER BY System.DateModified DESC"; 
                 }
                 else
                 {
-                    //We have 1 or more args. We'll treat them as word to be joined with OR
+                    //We have 1 or more args. We'll treat them as args to a CONTAINS predicate
+                    //joined with AND
+                    //http://msdn.microsoft.com/en-us/library/bb231270%28v=VS.85%29.aspx
                     var keywords=new string[] {"OR", "AND"};
 
-                    query = "SELECT System.ItemPathDisplay"
-                        + GetOptionalProperties()
-                        + " FROM SystemIndex WHERE SCOPE='file:' AND (";
+                    query = GetSelectClause();
+                    query += " FROM SystemIndex WHERE SCOPE='file:' AND (";
 
                     int state = 1;  
 
                     for (int i = 0; i<args.Length;++i)
                     {
-                        var arg = args[i].Replace("'", @"\'");
+                        var arg = args[i].Replace("'", "''");       //escape ticks
+                        arg = args[i].Replace("\"", "\"\"");        //escape quotes
+                        
+                        arg = "\"" + arg + "\"";                    //enclose in quotes
                         
                         if (i>0 && keywords.Contains(arg))
                         {
@@ -64,19 +72,22 @@ namespace locate
                         }
                         else
                         {
-                            query += state == 0 ? "OR" : "";
+                            query += state == 0 ? "AND" : "";
                             query += string.Format(" CONTAINS(System.FileName, '{0}') ",arg);
                             state = 0;
                         }
                     }
 
                     query += ")";
+                    if (OptGroup)
+                        query += ")";
                 }
 
                 var st = DateTime.Now;
                 ExecuteQuery(query, chapterDepth);
                 var tt = DateTime.Now - st;
-                Console.WriteLine("Took: {0} ms", tt.TotalMilliseconds);
+                if (!OptQuiet)
+                    Console.WriteLine("Took: {0} ms", tt.TotalMilliseconds);
             }
             catch (Exception e)
             {
@@ -86,11 +97,48 @@ namespace locate
             }
         }
 
-        private static string GetOptionalProperties()
+        private static string GetSelectClause()
         {
-            string query = (OptModified ? ",System.DateModified" : "");
-            query += (OptSize ?  ",System.Size" : "");
+            bool bFirstCol = true;
+            string query = "";
+            
+            if (OptRecent)
+                query = "SELECT TOP 20 ";
+            else if (OptGroup)  //Group && Recent !allowed
+                //ORDER BY System.DateModified DESC
+                query = "GROUP ON System.ItemPathDisplay OVER (SELECT ";
+            else
+                query = "SELECT ";
+
+
+            if (OptModified)
+                query += GetOptionalColumn(ref bFirstCol, "System.DateModified");
+
+            if (OptSize)
+                query += GetOptionalColumn(ref bFirstCol, "System.Size");
+            
+            if (OptPath)
+                query += GetOptionalColumn(ref bFirstCol, "System.ItemPathDisplay");
+            else
+                query += GetOptionalColumn(ref bFirstCol, "System.FileName");
+
             return query;
+        }
+
+        private static string GetOptionalColumn(ref bool bFirstCol, string colName)
+        {
+            string ret = "";
+            if (bFirstCol)
+            {
+                ret = colName;
+                bFirstCol = false;
+            }
+            else
+            {
+                ret = "," + colName;
+            }
+
+            return ret;
         }
 
         private static void ProcessArgs(StringBuilder switches)
@@ -108,6 +156,7 @@ namespace locate
                     case 'l':
                         OptModified = (state == 0);
                         OptSize = (state == 0);
+                        OptPath = (state == 0);
                         break;
 
                     case 'm':
@@ -117,6 +166,24 @@ namespace locate
                     case 's':
                         OptSize = (state == 0);
                         break;
+
+                    case 'p':
+                        OptPath = (state == 0);
+                        break;
+
+                    case 'q':
+                        OptQuiet = (state == 0);
+                        break;
+
+                    case 'g':
+                        OptGroup = (state == 0);
+                        break;
+
+                    case 'v':       //verbose (invert quiet)
+                        OptQuiet = !(state == 0);
+                        break;
+
+
 
                     default:
                         OptUsage = true;
@@ -166,7 +233,10 @@ namespace locate
                                 if (myDataReader.GetFieldType(i).ToString() != "System.Data.IDataReader")
                                 {
                                     //regular columns are displayed here
-                                    row.Append(myDataReader.GetValue(i));
+                                    //If (OptPath == false) and colName is System.ItemPathDisplay 
+                                    //We want to skip Display of this Column
+                                    if (!(OptPath == false && myDataReader.GetName(i) == "System.ItemPathDisplay"))
+                                        row.Append(myDataReader.GetValue(i));
                                 }
                                 else
                                 {
@@ -249,7 +319,9 @@ namespace locate
             OleDbCommand myOleDbCommand = new OleDbCommand(query, myOleDbConnection);
             try
             {
-                Console.WriteLine("Query=" + query);
+                if (!OptQuiet)
+                    Console.WriteLine("Query=" + query);
+
                 myOleDbConnection.Open();
                 myDataReader = myOleDbCommand.ExecuteReader();
                 if (!myDataReader.HasRows)
@@ -259,7 +331,9 @@ namespace locate
                 }
                 uint count = 0;
                 DisplayReader(myDataReader, ref count, 0, chapterDepth);
-                Console.WriteLine("Rows+Chapters=" + count);
+                
+                if (!OptQuiet)
+                    Console.WriteLine("Rows+Chapters=" + count);
             }
             catch (System.Data.OleDb.OleDbException oleDbException)
             {
