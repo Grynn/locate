@@ -26,8 +26,7 @@ namespace locate
             int chapterDepth = 10;
 
             string query = null;
-            var s0 = args
-                .TakeWhile(a=>Regex.IsMatch(a,@"^[-/]"));
+            var s0 = args.TakeWhile(a=>Regex.IsMatch(a,@"^[-/]"));
             
             var switches = s0
                 .Select(a=>Regex.Replace(a,"^[-/]","").ToLower())
